@@ -1,5 +1,6 @@
 package io.latent.storm.rabbitmq;
 
+import com.rabbitmq.client.*;
 import io.latent.storm.rabbitmq.config.ConnectionConfig;
 
 import java.io.IOException;
@@ -8,15 +9,6 @@ import java.util.concurrent.TimeoutException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.rabbitmq.client.Address;
-import com.rabbitmq.client.Channel;
-import com.rabbitmq.client.Connection;
-import com.rabbitmq.client.ConnectionFactory;
-import com.rabbitmq.client.ConsumerCancelledException;
-import com.rabbitmq.client.QueueingConsumer;
-import com.rabbitmq.client.ShutdownListener;
-import com.rabbitmq.client.ShutdownSignalException;
 
 /**
  * An abstraction on RabbitMQ client API to encapsulate interaction with RabbitMQ and de-couple Storm API from RabbitMQ API.
@@ -37,8 +29,6 @@ public class RabbitMQConsumer implements Serializable {
 
   private Connection connection;
   private Channel channel;
-  private QueueingConsumer consumer;
-  private String consumerTag;
 
   public RabbitMQConsumer(ConnectionConfig connectionConfig,
                           int prefetchCount,
@@ -59,21 +49,23 @@ public class RabbitMQConsumer implements Serializable {
 
   public Message nextMessage() {
     reinitIfNecessary();
-    if (consumerTag == null || consumer == null) return Message.NONE;
     try {
-      return Message.forDelivery(consumer.nextDelivery(MS_WAIT_FOR_MESSAGE));
+      GetResponse response = channel.basicGet(queueName, isAutoAcking());
+      if(response==null) {
+        return Message.NONE;
+      }else{
+        Delivery delivery = new Delivery(response);
+        return Message.forDelivery(delivery);
+      }
+    } catch (IOException e) {
+      logger.error("queue get message", e);
+      return Message.NONE;
     } catch (ShutdownSignalException sse) {
-      reset();
       logger.error("shutdown signal received while attempting to get next message", sse);
       reporter.reportError(sse);
       return Message.NONE;
-    } catch (InterruptedException ie) {
-      /* nothing to do. timed out waiting for message */
-      logger.debug("interruepted while waiting for message", ie);
-      return Message.NONE;
     } catch (ConsumerCancelledException cce) {
       /* if the queue on the broker was deleted or node in the cluster containing the queue failed */
-      reset();
       logger.error("consumer got cancelled while attempting to get next message", cce);
       reporter.reportError(cce);
       return Message.NONE;
@@ -140,8 +132,6 @@ public class RabbitMQConsumer implements Serializable {
       // run any declaration prior to queue consumption
       declarator.execute(channel);
 
-      consumer = new QueueingConsumer(channel);
-      consumerTag = channel.basicConsume(queueName, isAutoAcking(), consumer);
     } catch (Exception e) {
       reset();
       logger.error("could not open listener on queue " + queueName);
@@ -156,7 +146,6 @@ public class RabbitMQConsumer implements Serializable {
   public void close() {
     try {
       if (channel != null && channel.isOpen()) {
-        if (consumerTag != null) channel.basicCancel(consumerTag);
         channel.close();
       }
     } catch (Exception e) {
@@ -168,18 +157,17 @@ public class RabbitMQConsumer implements Serializable {
     } catch (Exception e) {
       logger.debug("error closing connection", e);
     }
-    consumer = null;
-    consumerTag = null;
+    //consumerTag = null;
     channel = null;
     connection = null;
   }
 
   private void reset() {
-    consumerTag = null;
   }
 
   private void reinitIfNecessary() {
-    if (consumerTag == null || consumer == null) {
+    //if (consumerTag == null || consumer == null) {
+    if (channel == null || connection == null) {
       close();
       open();
     }
@@ -199,5 +187,45 @@ public class RabbitMQConsumer implements Serializable {
     });
     logger.info("connected to rabbitmq: " + connection + " for " + queueName);
     return connection;
+  }
+
+  public static class Delivery {
+
+    private String consumerTag;
+
+    private byte[] body;
+
+    private AMQP.BasicProperties properties;
+
+    private Envelope envelope;
+
+    public Delivery(String consumerTag,
+                    byte[] body,
+                    AMQP.BasicProperties properties,
+                    Envelope envelope) {
+      this.consumerTag = consumerTag;
+      this.body = body;
+      this.envelope = envelope;
+      this.properties = properties;
+    }
+
+    public Delivery(GetResponse response) {
+      this.properties = response.getProps();
+      this.body = response.getBody();
+      this.envelope = response.getEnvelope();
+    }
+
+    public AMQP.BasicProperties getProperties() {
+      return this.properties;
+    }
+    public byte[] getBody() {
+      return this.body;
+    }
+    public Envelope getEnvelope() {
+      return this.envelope;
+    }
+    public String getConsumerTag() {
+      return this.consumerTag;
+    }
   }
 }

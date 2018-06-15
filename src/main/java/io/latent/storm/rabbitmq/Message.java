@@ -4,8 +4,6 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.rabbitmq.client.QueueingConsumer;
-
 public class Message {
   public static final Message NONE = new None();
 
@@ -15,7 +13,7 @@ public class Message {
     this.body = body;
   }
 
-  public static Message forDelivery(QueueingConsumer.Delivery delivery) {
+  public static Message forDelivery(RabbitMQConsumer.Delivery delivery) {
     return (delivery != null) ? new DeliveredMessage(delivery) : NONE;
   }
 
@@ -55,7 +53,7 @@ public class Message {
     private final String type;
     private final String userId;
 
-    private DeliveredMessage(QueueingConsumer.Delivery delivery) {
+    private DeliveredMessage(RabbitMQConsumer.Delivery delivery) {
       super(delivery.getBody());
       redelivery = delivery.getEnvelope().isRedeliver();
       deliveryTag = delivery.getEnvelope().getDeliveryTag();
